@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Cricket Lounge</title>
+
+  <!-- Styles (small, responsive) -->
+  <style>
+    :root{--accent1:#667eea;--accent2:#764ba2}
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;background:linear-gradient(135deg,var(--accent1) 0%,var(--accent2) 100%)}
+    .card{width:100%;max-width:980px;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.25)}
+    header{padding:28px;text-align:center;background:linear-gradient(135deg,var(--accent1) 0%,var(--accent2) 100%);color:#fff}
+    header h1{font-size:1.5rem}
+    .selector{display:flex;gap:12px;padding:18px;background:#f4f6fb;justify-content:center}
+    .stream-btn{display:flex;align-items:center;gap:10px;padding:10px 18px;border-radius:999px;border:2px solid var(--accent1);background:#fff;color:var(--accent1);cursor:pointer;font-weight:600}
+    .stream-btn.active{background:linear-gradient(135deg,var(--accent1) 0%,var(--accent2) 100%);color:#fff;border-color:transparent}
+    .stream-btn img{width:28px;height:28px;border-radius:6px;object-fit:cover}
+    .video-wrap{position:relative;padding:18px;background:#fbfcff}
+    video{width:100%;height:auto;border-radius:10px;box-shadow:0 8px 30px rgba(0,0,0,.18);background:#000}
+    .controls{display:flex;gap:10px;padding:16px;background:#fff;justify-content:center}
+    .btn{padding:10px 18px;border-radius:999px;border:0;cursor:pointer;font-weight:600}
+    .btn-primary{background:linear-gradient(135deg,var(--accent1) 0%,var(--accent2) 100%);color:#fff}
+    .status{padding:16px;text-align:center;font-size:14px;color:#374151}
+    .error{background:#fff6f6;border:1px solid #fecaca;color:#991b1b;padding:12px;border-radius:8px;display:none;margin:12px}
+    .hint{font-size:13px;color:#6b7280;margin-top:8px}
+    @media(max-width:640px){header h1{font-size:1.1rem}.stream-btn img{width:22px;height:22px}}
+  </style>
+
+  <!-- HLS.js (CDN) -->
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+</head>
+<body>
+  <div class="card">
+    <header>
+      <h1>🎥 Cricket Lounge</h1>
+      <div class="hint"> Quality Streams . Always free !</div>
+    </header>
+
+    <div class="selector">
+      <!-- Replace the img src with /assets/your-sky.png if you prefer local images -->
+      <button id="btn-sky" class="stream-btn active" aria-pressed="true" title="Sky stream">
+        <img id="img-sky" src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='64' height='64' viewBox='0 0 24 24'><rect rx='4' width='24' height='24' fill='%23667eea'/><path d='M6 12l4-4 4 4 4-4' stroke='%23fff' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round' fill='none'/></svg>" alt="sky">
+        Sky
+      </button>
+
+      <button id="btn-willow" class="stream-btn" aria-pressed="false" title="Willow stream">
+        <img id="img-willow" src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='64' height='64' viewBox='0 0 24 24'><rect rx='4' width='24' height='24' fill='%23764ba2'/><circle cx='12' cy='10' r='4' fill='%23fff'/></svg>" alt="willow">
+        Willow
+      </button>
+    </div>
+
+    <div class="video-wrap">
+      <video id="player" playsinline controls controlsList="nodownload"></video>
+      <div id="error" class="error" role="alert"></div>
+    </div>
+
+    <div class="controls">
+      <button id="unmute" class="btn btn-primary">🔊 Unmute</button>
+      <button id="fs" class="btn">⛶ Fullscreen</button>
+    </div>
+
+    <div class="status" id="status">Status: <span id="statusText">Initializing…</span></div>
+  </div>
+
+  <!-- Player logic -->
+  <script>
+  (function(){
+    'use strict';
+
+    // Elements
+    const video = document.getElementById('player');
+    const btnSky = document.getElementById('btn-sky');
+    const btnWillow = document.getElementById('btn-willow');
+    const errorEl = document.getElementById('error');
+    const statusText = document.getElementById('statusText');
+    const unmuteBtn = document.getElementById('unmute');
+    const fsBtn = document.getElementById('fs');
+
+    // State
+    let hls = null;
+    let current = 'sky'; // default
+    let isPlaying = false;
+
+    // Show/clear errors
+    function showError(msg) {
+      errorEl.style.display = 'block';
+      errorEl.textContent = msg;
+      statusText.textContent = 'Error';
+      console.warn(msg);
+    }
+    function clearError(){ errorEl.style.display = 'none'; errorEl.textContent = ''; }
+
+    // Build proxied playlist URL (calls your Pages Function)
+    function proxiedPlaylist(which) {
+      // e.g. /proxy?which=sky
+      return `/proxy?which=${encodeURIComponent(which)}`;
+    }
+
+    // Initialize or switch stream
+    async function initStream(which) {
+      clearError();
+      statusText.textContent = 'Preparing stream...';
+
+      const src = proxiedPlaylist(which);
+
+      // destroy previous hls instance if exists
+      if (hls) {
+        try { hls.detachMedia(); hls.destroy(); } catch(e) {}
+        hls = null;
+      }
+      // Reset video element to break any previous connections
+      try { video.pause(); } catch(e) {}
+      video.removeAttribute('src');
+      try { video.load(); } catch(e) {}
+      // If Safari/native supports HLS
+      if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        video.src = src;
+        video.muted = true; // autoplay policy
+        try {
+          await video.play();
+          statusText.textContent = 'Live (muted)';
+        } catch(e) {
+          statusText.textContent = 'Ready — click to play';
+        }
+        return;
+      }
+
+      // Use hls.js
+      if (Hls.isSupported()) {
+        hls = new Hls({ enableWorker: true, lowLatencyMode: false });
+        // Attach for debugging
+        window.hls = hls;
+        hls.attachMedia(video);
+        hls.loadSource(src);
+
+        hls.on(Hls.Events.MANIFEST_PARSED, function() {
+          statusText.textContent = 'Live (manifest parsed)';
+          video.muted = true;
+          video.play().then(()=> {
+            statusText.textContent = 'Live (muted)';
+          }).catch(()=> {
+            statusText.textContent = 'Ready — click to play';
+          });
+        });
+
+        hls.on(Hls.Events.ERROR, function(event, data) {
+          console.error('HLS error', data);
+          if (data && data.fatal) {
+            if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+              showError('Network error while fetching segments or playlist. Check proxy and origin.');
+              try { hls.startLoad(); } catch(e) {}
+            } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+              showError('Media decoding error. Attempting recovery.');
+              try { hls.recoverMediaError(); } catch(e) {}
+            } else {
+              showError('Fatal HLS error — see console for details.');
+              try { hls.destroy(); } catch(e) {}
+            }
+          }
+        });
+      } else {
+        showError('This browser cannot play HLS streams.');
+      }
+    }
+
+    // UI: button handlers
+    btnSky.addEventListener('click', function() {
+      if (current === 'sky') return;
+      btnSky.classList.add('active');
+      btnWillow.classList.remove('active');
+      btnSky.setAttribute('aria-pressed', 'true');
+      btnWillow.setAttribute('aria-pressed', 'false');
+      current = 'sky';
+      initStream('sky');
+    });
+
+    btnWillow.addEventListener('click', function() {
+      if (current === 'willow') return;
+      btnWillow.classList.add('active');
+      btnSky.classList.remove('active');
+      btnWillow.setAttribute('aria-pressed', 'true');
+      btnSky.setAttribute('aria-pressed', 'false');
+      current = 'willow';
+      initStream('willow');
+    });
+
+    // Unmute (user interaction required on many browsers)
+    unmuteBtn.addEventListener('click', function() {
+      video.muted = false;
+      video.play().catch(()=>{});
+    });
+
+    // Fullscreen
+    fsBtn.addEventListener('click', function() {
+      if (video.requestFullscreen) video.requestFullscreen();
+      else if (video.webkitRequestFullscreen) video.webkitRequestFullscreen();
+    });
+
+    // Video play/pause UI updates
+    video.addEventListener('play', () => { isPlaying = true; });
+    video.addEventListener('pause', () => { isPlaying = false; });
+
+    // Autostart default stream on load (attempts muted autoplay)
+    window.addEventListener('load', function() {
+      setTimeout(()=> initStream('sky'), 300);
+    });
+
+    // Optional helper you can call from console intentionally:
+    // - window.__reloadStream() : re-initialize current stream
+    // - window.__switchTo('willow'|'sky')
+    window.__reloadStream = function(){ initStream(current); };
+    window.__switchTo = function(name){ if (name==='sky' || name==='willow') { current = name; initStream(name); } };
+
+    // Helpful debug: show the proxied playlist URL (same-origin, safe)
+    console.info('Proxied playlist endpoint examples:', proxiedPlaylist('sky'), proxiedPlaylist('willow'));
+
+    // END
+  })();
+  </script>
+</body>
+</html>
